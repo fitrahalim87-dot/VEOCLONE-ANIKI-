@@ -511,9 +511,20 @@ export const VoiceCloneTab: React.FC<VoiceCloneTabProps> = ({
 
           {/* Error Message */}
           {errorMsg && (
-            <div className="flex items-center gap-2.5 rounded-xl bg-rose-500/10 border border-rose-500/30 p-3.5 text-xs text-rose-300">
-              <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
-              <span>{errorMsg}</span>
+            <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 rounded-xl bg-rose-500/15 border border-rose-500/30 p-3.5 text-xs text-rose-300">
+              <div className="flex items-center gap-2.5">
+                <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                <span>{errorMsg}</span>
+              </div>
+              {(errorMsg.includes('terputus') || errorMsg.includes('kadaluarsa') || errorMsg.includes('tidak dapat diakses') || errorMsg.includes('503')) && (
+                <button
+                  type="button"
+                  onClick={onOpenAccessModal}
+                  className="shrink-0 px-3 py-1.5 rounded-lg bg-emerald-500 text-slate-950 font-bold text-xs hover:bg-emerald-400 transition"
+                >
+                  Hubungkan Ulang Colab
+                </button>
+              )}
             </div>
           )}
 

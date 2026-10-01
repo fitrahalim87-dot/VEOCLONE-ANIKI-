@@ -112,9 +112,67 @@ app.post('/api/notebook/heartbeat', (req, res) => {
   });
 });
 
+function handleColabNetworkError(
+  err: any,
+  active: ColabNotebook | null,
+  res: express.Response,
+  logTag: string
+) {
+  console.error(`[${logTag}] Error:`, err);
+  const errMsg = err?.message || String(err);
+  const causeMsg = err?.cause?.message || (err?.cause ? String(err.cause) : '');
+  const code = err?.code || err?.cause?.code || '';
+
+  const isNetworkFailure =
+    code === 'ENOTFOUND' ||
+    code === 'ECONNREFUSED' ||
+    code === 'ETIMEDOUT' ||
+    code === 'ECONNRESET' ||
+    errMsg.includes('fetch failed') ||
+    errMsg.includes('ENOTFOUND') ||
+    errMsg.includes('ECONNREFUSED') ||
+    causeMsg.includes('ENOTFOUND') ||
+    causeMsg.includes('ECONNREFUSED');
+
+  if (isNetworkFailure && active) {
+    console.warn(`[${logTag}] Colab URL ${active.url} is dead/unreachable (${code || errMsg}). Removing from active notebooks.`);
+    connectedNotebooks.delete(active.notebook_id);
+    return res.status(503).json({
+      ok: false,
+      disconnected: true,
+      message: `Sesi Google Colab telah terputus (URL ${active.url} sudah kadaluarsa atau tidak aktif). Silakan buka kembali Google Colab Anda, jalankan ulang sel jika terhenti, dan masukkan URL tunnel atau kode akses yang baru.`,
+    });
+  }
+
+  return res.status(500).json({
+    ok: false,
+    message: `Gagal memproses audio di Colab: ${errMsg}`,
+  });
+}
+
 // 2. Status API for Frontend
-app.get('/api/notebook/status', (req, res) => {
+app.get('/api/notebook/status', async (req, res) => {
   const active = getActiveNotebook();
+  if (active) {
+    // Quick validation to detect dead Cloudflare tunnels early
+    try {
+      const pingRes = await fetch(`${active.url}/gradio_api/info`, {
+        signal: AbortSignal.timeout(3500),
+      });
+      if (pingRes.status >= 500) {
+        // host exists
+      }
+    } catch (pingErr: any) {
+      const code = pingErr?.code || pingErr?.cause?.code || '';
+      const msg = pingErr?.message || '';
+      if (code === 'ENOTFOUND' || msg.includes('ENOTFOUND') || msg.includes('ECONNREFUSED')) {
+        console.warn(`[StatusCheck] Colab tunnel ${active.url} is dead (${code || msg}). Removing.`);
+        connectedNotebooks.delete(active.notebook_id);
+      }
+    }
+  }
+
+  const currentActive = getActiveNotebook();
   const all = Array.from(connectedNotebooks.values()).map((nb) => ({
     notebook_id: nb.notebook_id,
     code: nb.code,
@@ -130,25 +188,34 @@ app.get('/api/notebook/status', (req, res) => {
 
   res.json({
     ok: true,
-    connected: !!active,
-    active_notebook: active
+    connected: !!currentActive,
+    active_notebook: currentActive
       ? {
-          notebook_id: active.notebook_id,
-          code: active.code,
-          engine: active.engine,
-          gpu: active.gpu,
-          url: active.url,
-          endpoint: active.endpoint,
-          jobs: active.jobs,
-          last_seen: active.last_seen,
-          last_error: active.last_error,
-          note: active.note,
+          notebook_id: currentActive.notebook_id,
+          code: currentActive.code,
+          engine: currentActive.engine,
+          gpu: currentActive.gpu,
+          url: currentActive.url,
+          endpoint: currentActive.endpoint,
+          jobs: currentActive.jobs,
+          last_seen: currentActive.last_seen,
+          last_error: currentActive.last_error,
+          note: currentActive.note,
         }
       : null,
     pairing_secret: activePairingSecret,
     app_url: process.env.APP_URL || `${req.protocol}://${req.get('host')}`,
     recent_notebooks: all,
   });
+});
+
+// Disconnect active notebook
+app.post('/api/notebook/disconnect', (_req, res) => {
+  const active = getActiveNotebook();
+  if (active) {
+    connectedNotebooks.delete(active.notebook_id);
+  }
+  return res.json({ ok: true, message: 'Notebook berhasil diputuskan.' });
 });
 
 // 3. Verify Access Code
@@ -390,11 +457,7 @@ app.post('/api/voice/design', async (req, res) => {
     res.setHeader('X-Voice-Status', encodeURIComponent(statusMsg));
     return res.send(Buffer.from(audioBuffer));
   } catch (err: any) {
-    console.error('[VoiceDesign] Error:', err);
-    return res.status(500).json({
-      ok: false,
-      message: `Error saat memproses audio di Colab: ${err.message || String(err)}`,
-    });
+    return handleColabNetworkError(err, active, res, 'VoiceDesign');
   }
 });
 
@@ -547,11 +610,7 @@ app.post('/api/voice/clone', async (req, res) => {
     res.setHeader('X-Voice-Status', encodeURIComponent(statusMsg));
     return res.send(Buffer.from(finalBuffer));
   } catch (err: any) {
-    console.error('[VoiceClone] Error:', err);
-    return res.status(500).json({
-      ok: false,
-      message: `Error saat kloning suara di Colab: ${err.message || String(err)}`,
-    });
+    return handleColabNetworkError(err, active, res, 'VoiceClone');
   }
 });
 
