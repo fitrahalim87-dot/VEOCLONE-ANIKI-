@@ -35,8 +35,18 @@ export const ColabGuideTab: React.FC<ColabGuideTabProps> = ({
   const [secretInput, setSecretInput] = useState(pairingSecret);
   const [savingSecret, setSavingSecret] = useState(false);
   const [secretMsg, setSecretMsg] = useState<string | null>(null);
+  const [serverAppUrl, setServerAppUrl] = useState(window.location.origin);
 
-  const currentAppUrl = window.location.origin;
+  React.useEffect(() => {
+    fetch('/api/notebook/status')
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.app_url) setServerAppUrl(d.app_url);
+      })
+      .catch(() => {});
+  }, []);
+
+  const currentAppUrl = serverAppUrl;
 
   const copyToClipboard = (text: string, type: 'url' | 'secret' | 'code') => {
     navigator.clipboard.writeText(text);

@@ -7,7 +7,16 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+
+function getPort(): number {
+  const portIdx = process.argv.indexOf('--port');
+  if (portIdx !== -1 && process.argv[portIdx + 1]) {
+    const p = parseInt(process.argv[portIdx + 1], 10);
+    if (!isNaN(p)) return p;
+  }
+  return Number(process.env.PORT) || 3000;
+}
+const PORT = getPort();
 
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
@@ -36,7 +45,8 @@ function getActiveNotebook(): ColabNotebook | null {
   const now = Date.now();
   let latest: ColabNotebook | null = null;
   for (const nb of connectedNotebooks.values()) {
-    if (now - nb.last_seen < 90000) {
+    // If it's a direct connection or recent heartbeat in last 120s
+    if (nb.notebook_id.startsWith('direct_') || now - nb.last_seen < 120000) {
       if (!latest || nb.last_seen > latest.last_seen) {
         latest = nb;
       }
@@ -136,6 +146,7 @@ app.get('/api/notebook/status', (req, res) => {
         }
       : null,
     pairing_secret: activePairingSecret,
+    app_url: process.env.APP_URL || `${req.protocol}://${req.get('host')}`,
     recent_notebooks: all,
   });
 });
@@ -149,18 +160,20 @@ app.post('/api/notebook/verify-code', (req, res) => {
 
   const cleanCode = String(code).trim();
   const active = getActiveNotebook();
+  const serverAppUrl = process.env.APP_URL || `${req.protocol}://${req.get('host')}`;
 
   if (!active) {
     return res.status(404).json({
       ok: false,
-      message: 'Belum ada Google Colab notebook yang tersambung. Pastikan notebook sudah dijalankan sampai sel Heartbeat.',
+      message: `Belum ada sinyal dari Google Colab. Pastikan APP_URL di sel 1 Colab diisi '${serverAppUrl}', atau gunakan opsi 'Sambung Manual via URL Tunnel Colab' di bawah.`,
+      app_url: serverAppUrl,
     });
   }
 
   if (active.code.trim() !== cleanCode) {
     return res.status(400).json({
       ok: false,
-      message: `Kode akses salah (${cleanCode}). Periksa banner kode akses 6-digit di sel output Google Colab.`,
+      message: `Kode akses tidak cocok (${cleanCode}). Kode aktif yang terhubung adalah: ${active.code}.`,
     });
   }
 
@@ -175,6 +188,77 @@ app.post('/api/notebook/verify-code', (req, res) => {
       jobs: active.jobs,
     },
   });
+});
+
+// 3b. Direct Connect via Colab Public/Tunnel URL
+app.post('/api/notebook/direct-connect', async (req, res) => {
+  const { url, code } = req.body || {};
+  if (!url || typeof url !== 'string' || !url.trim()) {
+    return res.status(400).json({ ok: false, message: 'URL tunnel Google Colab wajib diisi.' });
+  }
+
+  let cleanUrl = url.trim().replace(/\/$/, '');
+  if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+    cleanUrl = `https://${cleanUrl}`;
+  }
+
+  console.log(`[DirectConnect] Verifying Colab tunnel: ${cleanUrl}...`);
+
+  try {
+    let reachable = false;
+    try {
+      const testRes = await fetch(`${cleanUrl}/gradio_api/info`, {
+        signal: AbortSignal.timeout(10000),
+      });
+      if (testRes.status < 500) {
+        reachable = true;
+      }
+    } catch {
+      try {
+        const testRes2 = await fetch(cleanUrl, { signal: AbortSignal.timeout(8000) });
+        if (testRes2.status < 500) reachable = true;
+      } catch (err: any) {
+        console.warn('[DirectConnect] Fetch warning:', err.message);
+      }
+    }
+
+    const assignedCode = code && String(code).trim().length === 6 ? String(code).trim() : '120202';
+    const notebook: ColabNotebook = {
+      notebook_id: `direct_${Date.now()}`,
+      code: assignedCode,
+      url: cleanUrl,
+      engine: 'OmniVoice (k2-fsa)',
+      gpu: 'T4 GPU (Colab)',
+      version: 'Gradio / Cloudflare Tunnel',
+      endpoint: 'generate_voice',
+      api_base: '/gradio_api',
+      note: 'Terhubung langsung melalui URL tunnel Colab',
+      jobs: 0,
+      last_seen: Date.now() + 86400000, // kept alive
+    };
+
+    connectedNotebooks.set(notebook.notebook_id, notebook);
+    console.log(`[DirectConnect] Registered notebook successfully: ${cleanUrl} (Code: ${assignedCode})`);
+
+    return res.json({
+      ok: true,
+      message: 'Berhasil tersambung langsung ke Google Colab!',
+      notebook: {
+        notebook_id: notebook.notebook_id,
+        code: notebook.code,
+        engine: notebook.engine,
+        gpu: notebook.gpu,
+        url: notebook.url,
+        jobs: 0,
+      },
+    });
+  } catch (err: any) {
+    console.error('[DirectConnect] Error:', err);
+    return res.status(500).json({
+      ok: false,
+      message: `Gagal menghubungi URL Colab (${err.message || String(err)}). Pastikan link tunnel masih aktif.`,
+    });
+  }
 });
 
 // 4. Update Pairing Secret from Admin
