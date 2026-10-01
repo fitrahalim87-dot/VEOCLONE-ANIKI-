@@ -1,0 +1,6 @@
+{
+  "name": "Vonigen by Aniki - PWA Voice Studio",
+  "description": "Aplikasi PWA Voice Studio & AI Voice Cloning bertenaga OmniVoice dengan sambungan GPU Google Colab, Voice Design, dan pemutar audio instan.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
